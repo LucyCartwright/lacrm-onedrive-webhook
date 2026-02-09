@@ -154,8 +154,8 @@ app.post("/tidycal-sync", async (req, res) => {
         createdContacts++;
       }
 
-      const startsAt = booking.starts_at ? new Date(booking.starts_at) : null;
-      const formatted = startsAt ? startsAt.toISOString() : "";
+      const formatted = formatBookingDateTime(booking.starts_at, booking.timezone);
+      
       const infoLines = [
         `Date & Time: ${formatted}`,
         `Booking ID: ${bookingId}`,
@@ -292,6 +292,27 @@ async function createOneDriveFolder(folderName) {
   if (!res.ok || data.error) throw new Error(`Graph error: ${JSON.stringify(data)}`);
 
   return { webUrl: data.webUrl, id: data.id, name: data.name };
+}
+
+function formatBookingDateTime(startsAtIso, timeZone) {
+  if (!startsAtIso) return "";
+
+  const dt = new Date(startsAtIso);
+  const tz = timeZone || "Europe/London";
+
+  // Use Intl so it formats in the booking's timezone correctly
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: tz,
+    hour: "2-digit",
+    minute: "2-digit",
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+    hour12: false,
+  }).formatToParts(dt);
+
+  const get = (type) => parts.find(p => p.type === type)?.value || "";
+  return `${get("hour")}:${get("minute")} ${get("day")}/${get("month")}/${get("year")}`;
 }
 
 // ---------- Firestore state ----------
