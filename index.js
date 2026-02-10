@@ -331,7 +331,7 @@ app.post("/", async (req, res) => {
     const fieldKey = process.env.LACRM_ONEDRIVE_FIELD; // e.g. "OneDrive"
     await lacrmCall("EditContact", { ContactId: contactId, [fieldKey]: folder.webUrl });
 
-    console.log("Webhook success:", { contactId, folderUrl: folder.webUrl });
+    console.log("Webhook success:", { contactId, folderId: folder.id });
     return res.status(200).send("ok");
   } catch (err) {
     console.error("Webhook handler error:", err?.message || err);
