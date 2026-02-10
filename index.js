@@ -176,7 +176,47 @@ async function getMsAccessToken() {
   return data.access_token;
 }
 
+async function findExistingClientFolderByName(folderName) {
+  const accessToken = await getMsAccessToken();
+  const target = safeFolderName(folderName).toLowerCase();
+
+  // List children of the Clients folder, page through if needed
+  let url = `https://graph.microsoft.com/v1.0/me/drive/items/${process.env.ONEDRIVE_CLIENTS_FOLDER_ID}/children?$select=id,name,webUrl,folder`;
+
+  while (url) {
+    const res = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(`Graph list error: ${JSON.stringify(data)}`);
+
+    const items = Array.isArray(data.value) ? data.value : [];
+    const match = items.find(
+      (item) =>
+        item?.folder && // ensure it’s a folder
+        typeof item.name === "string" &&
+        item.name.toLowerCase() === target
+    );
+
+    if (match) return { id: match.id, name: match.name, webUrl: match.webUrl };
+
+    url = data["@odata.nextLink"] || null;
+  }
+
+  return null;
+}
+
+
 async function createOneDriveFolder(folderName) {
+  // 1) Reuse existing folder if it already exists
+  const existing = await findExistingClientFolderByName(folderName);
+  if (existing) return existing;
+
+  // 2) Otherwise create a new one
   const accessToken = await getMsAccessToken();
 
   const url = `https://graph.microsoft.com/v1.0/me/drive/items/${process.env.ONEDRIVE_CLIENTS_FOLDER_ID}/children`;
@@ -196,10 +236,11 @@ async function createOneDriveFolder(folderName) {
   });
 
   const data = await res.json();
-  if (!res.ok || data.error) throw new Error(`Graph error: ${JSON.stringify(data)}`);
+  if (!res.ok || data.error) throw new Error(`Graph create error: ${JSON.stringify(data)}`);
 
   return { webUrl: data.webUrl, id: data.id, name: data.name };
 }
+
 
 // -----------------------------------------------------------------------------
 // Firestore state for polling dedupe
