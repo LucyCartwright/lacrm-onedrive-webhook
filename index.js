@@ -284,7 +284,7 @@ app.post("/", async (req, res) => {
   // Handshake
   const hookSecret = req.header("X-Hook-Secret");
   if (hookSecret) {
-    console.log("LACRM handshake hook secret received");
+    console.log("LACRM handshake hook secret received", hookSecret);
     res.set("X-Hook-Secret", hookSecret);
     return res.status(200).send("ok");
   }
