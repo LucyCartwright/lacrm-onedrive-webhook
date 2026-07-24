@@ -1,6 +1,7 @@
 import express from "express";
 import crypto from "crypto";
 import { Firestore } from "@google-cloud/firestore";
+import { SecretManagerServiceClient } from "@google-cloud/secret-manager";
 
 /**
  * Cloud Run service that does two jobs:
@@ -16,6 +17,15 @@ const app = express();
 app.use(express.raw({ type: "*/*" })); // raw body required for HMAC signature verification
 
 const db = new Firestore();
+
+const secretManager = new SecretManagerServiceClient();
+
+const GOOGLE_CLOUD_PROJECT =
+  process.env.GOOGLE_CLOUD_PROJECT || "able-imprint-393115";
+
+const MS_REFRESH_TOKEN_SECRET =
+  `projects/${GOOGLE_CLOUD_PROJECT}` +
+  "/secrets/lacrm-onedrive-ms-refresh-token";
 
 // -----------------------------------------------------------------------------
 // Small utilities
@@ -153,29 +163,137 @@ async function tidycalFetchBookings() {
   throw new Error("Unexpected TidyCal response shape");
 }
 
-async function getMsAccessToken() {
-  const tokenUrl = `https://login.microsoftonline.com/${process.env.MS_TENANT_ID}/oauth2/v2.0/token`;
+async function readMsRefreshToken() {
+  try {
+    const [version] = await secretManager.accessSecretVersion({
+      name: `${MS_REFRESH_TOKEN_SECRET}/versions/latest`,
+    });
 
-  const form = new URLSearchParams();
-  form.set("client_id", process.env.MS_CLIENT_ID);
-  form.set("client_secret", process.env.MS_CLIENT_SECRET);
-  form.set("grant_type", "refresh_token");
-  form.set("refresh_token", process.env.MS_REFRESH_TOKEN);
+    const refreshToken = version.payload?.data?.toString("utf8").trim();
 
-  // Delegated flow: ask for delegated scopes (offline_access included for refresh-token longevity)
-  form.set("scope", "offline_access https://graph.microsoft.com/Files.ReadWrite.All");
+    if (!refreshToken) {
+      throw new Error("Latest Secret Manager version is empty");
+    }
 
-  const res = await fetch(tokenUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: form.toString(),
-  });
+    return refreshToken;
+  } catch (error) {
+    /*
+     * Temporary deployment fallback.
+     * Remove this after Secret Manager has been tested successfully.
+     */
+    if (process.env.MS_REFRESH_TOKEN) {
+      console.warn(
+        "Could not read Microsoft refresh token from Secret Manager; " +
+        "using temporary environment-variable fallback."
+      );
 
-  const data = await res.json();
-  if (!res.ok || data.error) throw new Error(`MS token error: ${JSON.stringify(data)}`);
-  return data.access_token;
+      return process.env.MS_REFRESH_TOKEN;
+    }
+
+    throw new Error(
+      `Unable to read Microsoft refresh token: ${error.message}`
+    );
+  }
 }
 
+async function saveMsRefreshToken(refreshToken) {
+  if (!refreshToken) {
+    throw new Error("Microsoft returned no replacement refresh token");
+  }
+
+  await secretManager.addSecretVersion({
+    parent: MS_REFRESH_TOKEN_SECRET,
+    payload: {
+      data: Buffer.from(refreshToken, "utf8"),
+    },
+  });
+
+  console.log("Microsoft refresh token rotated successfully.");
+}
+
+let cachedMsAccessToken = null;
+let cachedMsAccessTokenExpiresAt = 0;
+let msTokenRefreshPromise = null;
+
+async function getMsAccessToken() {
+  /*
+   * Reuse the access token until five minutes before expiry.
+   * This avoids rotating the refresh token for every webhook call.
+   */
+  const now = Date.now();
+
+  if (
+    cachedMsAccessToken &&
+    now < cachedMsAccessTokenExpiresAt - 5 * 60 * 1000
+  ) {
+    return cachedMsAccessToken;
+  }
+
+  /*
+   * If two webhook requests arrive together, both wait for the same
+   * refresh operation rather than rotating the token concurrently.
+   */
+  if (msTokenRefreshPromise) {
+    return msTokenRefreshPromise;
+  }
+
+  msTokenRefreshPromise = (async () => {
+    const refreshToken = await readMsRefreshToken();
+
+    const tokenUrl =
+      `https://login.microsoftonline.com/` +
+      `${process.env.MS_TENANT_ID}/oauth2/v2.0/token`;
+
+    const form = new URLSearchParams();
+    form.set("client_id", process.env.MS_CLIENT_ID);
+    form.set("client_secret", process.env.MS_CLIENT_SECRET);
+    form.set("grant_type", "refresh_token");
+    form.set("refresh_token", refreshToken);
+    form.set(
+      "scope",
+      "offline_access https://graph.microsoft.com/Files.ReadWrite.All"
+    );
+
+    const res = await fetch(tokenUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: form.toString(),
+    });
+
+    const data = await res.json();
+
+    if (!res.ok || data.error) {
+      throw new Error(`MS token error: ${JSON.stringify(data)}`);
+    }
+
+    if (!data.access_token) {
+      throw new Error("Microsoft returned no access token");
+    }
+
+    /*
+     * Save the replacement refresh token before using the access token.
+     * If this write fails, the webhook returns 500 rather than silently
+     * continuing with token rotation left incomplete.
+     */
+    await saveMsRefreshToken(data.refresh_token);
+
+    cachedMsAccessToken = data.access_token;
+
+    const expiresInSeconds = Number(data.expires_in) || 3600;
+    cachedMsAccessTokenExpiresAt =
+      Date.now() + expiresInSeconds * 1000;
+
+    return cachedMsAccessToken;
+  })();
+
+  try {
+    return await msTokenRefreshPromise;
+  } finally {
+    msTokenRefreshPromise = null;
+  }
+}
 async function findExistingClientFolderByName(folderName) {
   const accessToken = await getMsAccessToken();
   const target = safeFolderName(folderName).toLowerCase();
