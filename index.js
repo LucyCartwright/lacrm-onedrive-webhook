@@ -483,6 +483,23 @@ app.post("/", async (req, res) => {
   }
 });
 
+// Temporary endpoint for testing Cloud Logging alerts.
+// Remove after the alert has been confirmed.
+app.post("/test-application-error", (req, res) => {
+  const authErr = requireJobToken(req, res);
+  if (authErr) return;
+
+  logApplicationError(
+    "Monitoring test",
+    "Deliberate test error — no real application failure"
+  );
+
+  return res.status(200).json({
+    ok: true,
+    message: "Test application error written to Cloud Logging",
+  });
+});
+
 /**
  * TidyCal polling sync
  * - Protected by X-Job-Token
