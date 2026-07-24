@@ -115,15 +115,43 @@ function parseTidycalQuestions(questions) {
   return { blogAnswer, userMessage };
 }
 
+function errorMessage(error) {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
+function logApplicationError(context, error) {
+  console.error(`APPLICATION_ERROR: ${context}: ${errorMessage(error)}`);
+}
+
 // -----------------------------------------------------------------------------
 // Simple auth for the scheduler-triggered endpoint
 // -----------------------------------------------------------------------------
 
 function requireJobToken(req, res) {
   const expected = process.env.JOB_TOKEN;
-  if (!expected) return res.status(500).send("Missing JOB_TOKEN env var");
+
+  if (!expected) {
+    logApplicationError(
+      "Scheduler authentication configuration",
+      "Missing JOB_TOKEN environment variable"
+    );
+    return res.status(500).send("Missing JOB_TOKEN env var");
+  }
+
   const got = req.header("X-Job-Token") || "";
-  if (got !== expected) return res.status(403).send("Forbidden");
+
+  if (got !== expected) {
+    console.warn("Scheduler request rejected: invalid job token");
+    return res.status(403).send("Forbidden");
+  }
+
   return null;
 }
 
@@ -396,19 +424,30 @@ app.post("/", async (req, res) => {
 
   // Verify signature
   const storedSecret = process.env.LACRM_HOOK_SECRET;
-  if (!storedSecret) return res.status(500).send("Missing LACRM_HOOK_SECRET env var");
+
+  if (!storedSecret) {
+    logApplicationError(
+        "Configuration",
+        "Missing LACRM_HOOK_SECRET"
+    );
+    return res.status(500).send("Missing LACRM_HOOK_SECRET env var");
+  }
 
   const sigHeader = req.header("X-Hook-Signature") || "";
   const rawBody = req.body; // Buffer
   const computed = crypto.createHmac("sha256", storedSecret).update(rawBody).digest("hex");
 
-  if (!timingSafeEq(computed, sigHeader)) return res.status(401).send("Bad signature");
+  if (!timingSafeEq(computed, sigHeader)) {
+    console.warn("LACRM webhook request rejected: invalid signature");
+    return res.status(401).send("Bad signature");
+  }
 
   // Parse JSON payload
   let payload;
   try {
     payload = JSON.parse(rawBody.toString("utf8"));
   } catch {
+    console.warn("LACRM webhook request rejected: invalid JSON");
     return res.status(400).send("Invalid JSON");
   }
 
@@ -439,7 +478,7 @@ app.post("/", async (req, res) => {
     console.log("Webhook success:", { contactId, folderId: folder.id });
     return res.status(200).send("ok");
   } catch (err) {
-    console.error("Webhook handler error:", err?.message || err);
+    logApplicationError("LACRM webhook processing", err);
     return res.status(500).send("error");
   }
 });
@@ -580,11 +619,21 @@ app.post("/tidycal-sync", async (req, res) => {
       skipped,
     });
   } catch (err) {
-    console.error("tidycal-sync error:", err?.message || err);
+    logApplicationError("TidyCal sync", err);
     return res.status(500).json({ ok: false, error: String(err?.message || err) });
   }
 });
 
 // IMPORTANT: listen after routes are registered
 const port = process.env.PORT || 8080;
+
+process.on("unhandledRejection", (reason) => {
+  logApplicationError("Unhandled promise rejection", reason);
+});
+
+process.on("uncaughtException", (error) => {
+  logApplicationError("Uncaught exception", error);
+  process.exit(1);
+});
+
 app.listen(port, () => console.log(`Listening on ${port}`));
