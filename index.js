@@ -177,21 +177,8 @@ async function readMsRefreshToken() {
 
     return refreshToken;
   } catch (error) {
-    /*
-     * Temporary deployment fallback.
-     * Remove this after Secret Manager has been tested successfully.
-     */
-    if (process.env.MS_REFRESH_TOKEN) {
-      console.warn(
-        "Could not read Microsoft refresh token from Secret Manager; " +
-        "using temporary environment-variable fallback."
-      );
-
-      return process.env.MS_REFRESH_TOKEN;
-    }
-
     throw new Error(
-      `Unable to read Microsoft refresh token: ${error.message}`
+      `Unable to read Microsoft refresh token from Secret Manager: ${error.message}`
     );
   }
 }
