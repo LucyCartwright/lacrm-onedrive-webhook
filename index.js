@@ -593,6 +593,7 @@ app.post("/tidycal-sync", async (req, res) => {
         ContactId: contactId,
         PipelineId: process.env.LACRM_PIPELINE_ID,
         StatusId: process.env.LACRM_STATUS_ID,
+        RunStatusAutomation: true,
         Note: `TidyCal booking - ${formatted}`,
         Info: infoLines,
         Message: userMessage || "",
